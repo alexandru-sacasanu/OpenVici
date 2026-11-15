@@ -32,12 +32,15 @@ class ContextEngine:
     max_chars: int = 400_000
     max_tool_result_chars: int = 30_000
     memory_snapshot: str = ""  # frozen at session start; edits show up next session
+    first_session_note: str = ""
 
     def system_prompt(self, tools: list[ToolSpec]) -> str:
         prompt = _SYSTEM
         if self.memory_snapshot:
             prompt += ("\n\nYour saved notes (background from earlier sessions; the user's current "
                        "words take precedence over them):\n" + self.memory_snapshot)
+        if self.first_session_note:
+            prompt += "\n\n" + self.first_session_note
         if tools:
             prompt += "\n\nTools available: " + ", ".join(t.name for t in tools) + "."
         return prompt

@@ -1,10 +1,11 @@
-"""openvici chat | dashboard | sessions | memory | forget | check | run | audit"""
+"""openvici setup | doctor | chat | dashboard | sessions | memory | forget | check | run | audit"""
 
 from __future__ import annotations
 
 import argparse
 import sys
 
+from . import __version__
 from .agent import Agent
 from .approval import ApprovalPolicy, Verdict
 from .approval.smart import SmartReviewer
@@ -78,11 +79,57 @@ def build_agent(config: Config, audit: AuditLog, session: SessionState, sessions
     return Agent(provider, tools, context, config.max_steps)
 
 
+WELCOME = """Welcome to OpenVici. A few things to know before your first message:
+
+  - The agent works in the folder you started it from. It can read and write files there.
+  - Shell commands run in an isolated container with no network. Before one runs you are
+    shown the exact command and asked y/N, unless it matches a rule you allowed.
+  - Web pages outside your allowed domains are also shown to you before they are fetched.
+  - It can keep short notes between sessions. `openvici memory` shows them.
+
+Things to try:
+  explain what this project does
+  find where the config file is loaded and add a comment explaining it
+  run the tests and tell me what fails
+
+Type /help for commands, /exit to leave.
+"""
+
+HELP = """Commands inside the chat:
+  /help     this text
+  /exit     leave (Ctrl-D also works)
+
+When the agent asks "Run it? [y/N]": y runs that one command, anything else refuses it.
+A line starting with BLOCKED means a safety rule stopped the command; that cannot be overridden.
+
+Outside the chat:
+  openvici dashboard            chat, settings and status in the browser
+  openvici memory               what the agent remembers about you and your work
+  openvici sessions search X    find something said in an earlier session
+  openvici forget --session ID  delete a session and the notes it wrote
+  openvici check "command"      see whether a command would run, ask or be blocked
+  openvici doctor               check the installation
+"""
+
+FIRST_SESSION_NOTE = (
+    "This is the user's first session with you. In your first reply, before anything else, say in two or "
+    "three short sentences what you can do here (read and edit files in their project, run commands in a "
+    "sandbox after they approve, look things up on the web, remember notes between sessions) and ask what "
+    "they are working on. Do this once.")
+
+
 def _chat(config: Config, audit: AuditLog) -> int:
+    if not config.model.name:
+        print("No model is set up yet. Run this first:\n\n  openvici setup\n", file=sys.stderr)
+        return 3
     sessions = SessionStore(config.sessions_path)
+    first_time = not sessions.list(1)
     session = SessionState(new_session_id())
     agent = build_agent(config, audit, session, sessions)
-    print(f"OpenVici, session {session.id}. Ctrl-D or /exit to leave.", file=sys.stderr)
+    if first_time:
+        print(WELCOME, file=sys.stderr)
+        agent.context.first_session_note = FIRST_SESSION_NOTE
+    print(f"OpenVici, session {session.id}. /help for commands, /exit to leave.", file=sys.stderr)
     while True:
         try:
             line = input("\nyou> ").strip()
@@ -91,6 +138,12 @@ def _chat(config: Config, audit: AuditLog) -> int:
             return 0
         if line in ("/exit", "/quit"):
             return 0
+        if line == "/help":
+            print(HELP, file=sys.stderr)
+            continue
+        if line.startswith("/"):
+            print(f"Unknown command {line.split()[0]}. Type /help.", file=sys.stderr)
+            continue
         if not line:
             continue
         before = len(agent.history)
@@ -105,8 +158,13 @@ def _chat(config: Config, audit: AuditLog) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="openvici")
+    parser = argparse.ArgumentParser(
+        prog="openvici", description="A personal AI agent that is isolated by default.",
+        epilog="First time here? Run: openvici setup")
+    parser.add_argument("--version", action="version", version=f"openvici {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("setup", help="choose a model and get ready for the first conversation")
+    sub.add_parser("doctor", help="check that the installation is ready")
     sub.add_parser("chat", help="talk to the agent")
     p_dash = sub.add_parser("dashboard", help="open the local web dashboard")
     p_dash.add_argument("--port", type=int, help="port on 127.0.0.1 (default: dashboard.port, 8765)")
@@ -128,6 +186,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.cmd == "setup":
+            if not sys.stdin.isatty():
+                print("openvici setup asks questions; run it in a terminal.", file=sys.stderr)
+                return 2
+            import getpass
+            from .setup import run_setup
+            return run_setup(input, getpass.getpass, print)
+        if args.cmd == "doctor":
+            from .doctor import report, run_checks
+            text, code = report(run_checks())
+            print(text)
+            return code
+
         config = load_config()
         policy = ApprovalPolicy(deny=config.deny, allow=config.allow)
         audit = AuditLog(config.audit_path)

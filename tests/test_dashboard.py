@@ -15,7 +15,7 @@ from openvici.config import ConfigError, load_config
 from openvici.config_schema import SPEC, type_problem
 from openvici.dashboard import DashboardError, DashboardServer
 from openvici.dashboard.status import GIB, build_alerts, read_meminfo
-from openvici.dashboard.toml_out import dump_toml
+from openvici.toml_out import dump_toml
 
 TOKEN = "test-token-123"
 ECHO = [sys.executable, "-u", "-c", "print('ready'); x = input(); print('got:' + x)"]
