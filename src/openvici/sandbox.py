@@ -70,13 +70,16 @@ class SandboxPolicy:
             raise SandboxError(f"refusing to expose {ws} as the workspace; pick a project folder")
         if "," in str(ws):
             raise SandboxError("workspace path may not contain a comma")
-        if self.network in _FORBIDDEN_NETWORKS or self.network.startswith("container:") \
-                or not _NETWORK_NAME.match(self.network):
-            raise SandboxError(f"network '{self.network}' is not allowed; use 'none' or a named Docker network")
+        check_network(self.network)
         if not self.image or self.image.startswith("-"):
             raise SandboxError("invalid image name")
         return SandboxPolicy(ws, self.image, self.network, self.memory, self.cpus,
                              self.pids_limit, self.timeout_s, self.workspace_writable)
+
+
+def check_network(network: str) -> None:
+    if network in _FORBIDDEN_NETWORKS or network.startswith("container:") or not _NETWORK_NAME.match(network):
+        raise SandboxError(f"network '{network}' is not allowed; use 'none' or a named Docker network")
 
 
 class Sandbox(Protocol):

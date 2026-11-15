@@ -18,6 +18,9 @@ openvici = "openvici.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+openvici = ["dashboard/static/*", "dashboard/static/assets/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

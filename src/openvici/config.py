@@ -11,7 +11,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .sandbox import SandboxPolicy
+from .config_schema import KEYS, type_problem
+from .sandbox import SandboxError, SandboxPolicy, check_network
 from .tools.web import WebPolicy
 
 
@@ -59,6 +60,7 @@ class Config:
     memory_write_approval: str = "tainted"
     smart: SmartApprovalConfig = field(default_factory=SmartApprovalConfig)
     redact_patterns: bool = True
+    dashboard_port: int = 8765
 
     @property
     def memory_dir(self) -> Path:
@@ -77,45 +79,47 @@ class Config:
         return self.home / "credentials.json"
 
 
-_SCHEMA: dict[str, set[str]] = {
-    "sandbox": {"mode", "workspace", "image", "network", "memory", "cpus", "pids_limit",
-                "timeout_s", "workspace_writable"},
-    "approvals": {"deny", "allow"},
-    "credentials": {"grants"},
-    "model": {"provider", "name", "base_url", "credential", "max_tokens"},
-    "web": {"allow_domains", "deny_domains", "allowed_ports", "max_bytes", "timeout_s"},
-    "agent": {"max_steps", "context_chars"},
-    "memory": {"memory_chars", "user_chars", "write_approval"},
-    "smart_approval": {"enabled", "provider", "name", "base_url", "credential", "max_chars"},
-    "redaction": {"patterns"},
-}
 
-
-def load_config(path: Path | None = None) -> Config:
-    home = home_dir()
-    path = path or home / "config.toml"
+def read_raw(path: Path) -> dict:
+    """The file's contents, checked against the schema: known sections, known
+    keys, right types. An absent file is an empty config."""
     data: dict = {}
     if path.exists():
         try:
             data = tomllib.loads(path.read_text())
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"{path}: {exc}") from exc
+    check_raw(data, str(path))
+    return data
 
+
+def check_raw(data: dict, where: str = "config") -> None:
     for section, body in data.items():
-        if section not in _SCHEMA:
-            raise ConfigError(f"{path}: unknown section [{section}]")
+        if section not in KEYS:
+            raise ConfigError(f"{where}: unknown section [{section}]")
         if not isinstance(body, dict):
-            raise ConfigError(f"{path}: [{section}] must be a table")
-        unknown = set(body) - _SCHEMA[section]
+            raise ConfigError(f"{where}: [{section}] must be a table")
+        unknown = set(body) - set(KEYS[section])
         if unknown:
-            raise ConfigError(f"{path}: unknown key(s) in [{section}]: {', '.join(sorted(unknown))}")
+            raise ConfigError(f"{where}: unknown key(s) in [{section}]: {', '.join(sorted(unknown))}")
+        for key, value in body.items():
+            problem = type_problem(value, KEYS[section][key])
+            if problem:
+                raise ConfigError(f"{where}: {section}.{key} {problem}")
+
+
+def load_config(path: Path | None = None) -> Config:
+    home = home_dir()
+    path = path or home / "config.toml"
+    data = read_raw(path)
 
     sb = dict(data.get("sandbox", {}))
     mode = sb.pop("mode", "docker")
-    workspace = Path(sb.pop("workspace", os.getcwd()))
+    workspace = Path(sb.pop("workspace", "") or os.getcwd())
     try:
         policy = SandboxPolicy(workspace=workspace, **sb)
-    except TypeError as exc:
+        check_network(policy.network)
+    except (TypeError, SandboxError) as exc:
         raise ConfigError(f"{path}: [sandbox] {exc}") from exc
 
     web = dict(data.get("web", {}))
@@ -164,6 +168,7 @@ def load_config(path: Path | None = None) -> Config:
         memory_write_approval=write_approval,
         smart=smart,
         redact_patterns=redact,
+        dashboard_port=data.get("dashboard", {}).get("port", 8765),
     )
 
 

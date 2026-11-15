@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenVici</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <span class="brand">OpenVici</span>
+        <nav id="tabs" role="tablist">
+          <button role="tab" data-tab="chat" aria-selected="true">Chat</button>
+          <button role="tab" data-tab="config" aria-selected="false">Settings</button>
+          <button role="tab" data-tab="status" aria-selected="false">Status</button>
+        </nav>
+      </header>
+      <div id="banner" role="status" hidden></div>
+      <main>
+        <section id="tab-chat" role="tabpanel"></section>
+        <section id="tab-config" role="tabpanel" hidden></section>
+        <section id="tab-status" role="tabpanel" hidden></section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

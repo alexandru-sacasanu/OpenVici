@@ -1,4 +1,4 @@
-"""openvici chat | sessions | memory | forget | check | run | audit"""
+"""openvici chat | dashboard | sessions | memory | forget | check | run | audit"""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from .approval.smart import SmartReviewer
 from .audit import AuditError, AuditLog
 from .config import Config, ConfigError, load_config
 from .context import ContextEngine
+from .dashboard import DashboardError, DashboardServer
 from .credentials import CredentialBroker, CredentialError
 from .executor import Executor
 from .forget import forget_session
@@ -107,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="openvici")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("chat", help="talk to the agent")
+    p_dash = sub.add_parser("dashboard", help="open the local web dashboard")
+    p_dash.add_argument("--port", type=int, help="port on 127.0.0.1 (default: dashboard.port, 8765)")
+    p_dash.add_argument("--no-open", action="store_true", help="print the link without opening a browser")
     p_sessions = sub.add_parser("sessions", help="list or search earlier sessions")
     p_sessions.add_argument("what", choices=["list", "search"])
     p_sessions.add_argument("query", nargs="?", default="")
@@ -130,6 +134,22 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "chat":
             return _chat(config, audit)
+
+        if args.cmd == "dashboard":
+            server = DashboardServer(port=args.port if args.port is not None else config.dashboard_port)
+            print("OpenVici dashboard, reachable from this machine only. Open this link:\n")
+            print(f"  {server.url}\n")
+            print("The link carries this session's access key; do not share it. Ctrl-C to stop.", flush=True)
+            if not args.no_open:
+                import webbrowser
+                webbrowser.open(server.url)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.shutdown()
+            return 0
 
         if args.cmd == "sessions":
             store = SessionStore(config.sessions_path)
@@ -192,7 +212,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(outcome.result.stdout)
         sys.stderr.write(outcome.result.stderr)
         return outcome.result.exit_code
-    except (ConfigError, SandboxError, CredentialError, AuditError, ProviderError, SessionError, ValueError) as exc:
+    except (ConfigError, SandboxError, CredentialError, AuditError, ProviderError, SessionError, DashboardError,
+            ValueError) as exc:
         print(f"openvici: {exc}", file=sys.stderr)
         return 3
 
