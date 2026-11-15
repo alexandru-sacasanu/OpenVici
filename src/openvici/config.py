@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .sandbox import SandboxPolicy
+from .tools.web import WebPolicy
 
 
 class ConfigError(Exception):
@@ -23,6 +24,15 @@ def home_dir() -> Path:
 
 
 @dataclass(frozen=True)
+class ModelConfig:
+    provider: str = "anthropic"
+    name: str = ""
+    base_url: str = ""
+    credential: str = ""  # name of the secret holding the API key; must be granted to "model"
+    max_tokens: int = 4096
+
+
+@dataclass(frozen=True)
 class Config:
     home: Path
     sandbox_mode: str
@@ -30,6 +40,10 @@ class Config:
     deny: list[str] = field(default_factory=list)
     allow: list[str] = field(default_factory=list)
     grants: dict[str, list[str]] = field(default_factory=dict)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    web: WebPolicy = field(default_factory=WebPolicy)
+    max_steps: int = 25
+    context_chars: int = 400_000
 
     @property
     def audit_path(self) -> Path:
@@ -45,6 +59,9 @@ _SCHEMA: dict[str, set[str]] = {
                 "timeout_s", "workspace_writable"},
     "approvals": {"deny", "allow"},
     "credentials": {"grants"},
+    "model": {"provider", "name", "base_url", "credential", "max_tokens"},
+    "web": {"allow_domains", "deny_domains", "allowed_ports", "max_bytes", "timeout_s"},
+    "agent": {"max_steps", "context_chars"},
 }
 
 
@@ -75,6 +92,19 @@ def load_config(path: Path | None = None) -> Config:
     except TypeError as exc:
         raise ConfigError(f"{path}: [sandbox] {exc}") from exc
 
+    web = dict(data.get("web", {}))
+    if "allowed_ports" in web:
+        web["allowed_ports"] = tuple(web["allowed_ports"])
+    for key in ("allow_domains", "deny_domains"):
+        if key in web:
+            _string_list(web[key], f"web.{key}")
+    agent = data.get("agent", {})
+    try:
+        model = ModelConfig(**data.get("model", {}))
+        web_policy = WebPolicy(**web)
+    except TypeError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+
     approvals = data.get("approvals", {})
     grants = data.get("credentials", {}).get("grants", {})
     return Config(
@@ -84,6 +114,10 @@ def load_config(path: Path | None = None) -> Config:
         deny=_string_list(approvals.get("deny", []), "approvals.deny"),
         allow=_string_list(approvals.get("allow", []), "approvals.allow"),
         grants={tool: _string_list(names, f"credentials.grants.{tool}") for tool, names in grants.items()},
+        model=model,
+        web=web_policy,
+        max_steps=int(agent.get("max_steps", 25)),
+        context_chars=int(agent.get("context_chars", 400_000)),
     )
 
 
