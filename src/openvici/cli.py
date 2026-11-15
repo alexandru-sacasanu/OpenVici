@@ -7,6 +7,7 @@ import sys
 
 from .agent import Agent
 from .approval import ApprovalPolicy, Verdict
+from .approval.smart import SmartReviewer
 from .audit import AuditError, AuditLog
 from .config import Config, ConfigError, load_config
 from .context import ContextEngine
@@ -16,9 +17,10 @@ from .forget import forget_session
 from .memory import TARGETS, MemoryStore
 from .sessions import SessionError, SessionStore, new_session_id
 from .providers import ProviderError, make_provider
+from .redact import chain, redact_patterns
 from .sandbox import SandboxError, make_sandbox
 from .tools import (SessionState, ToolRegistry, Workspace, memory_tool, read_file_tool,
-                    session_search_tool, shell_tool, web_fetch_tool, write_file_tool)
+                    session_search_tool, shell_tool, stash_command, web_fetch_tool, write_file_tool)
 
 
 def _ask_on_tty(command: str, verdict: Verdict) -> bool:
@@ -38,19 +40,30 @@ def _confirm_on_tty(action: str, reason: str) -> bool:
 def build_agent(config: Config, audit: AuditLog, session: SessionState, sessions: SessionStore,
                 approver=_ask_on_tty, confirm=_confirm_on_tty) -> Agent:
     broker = CredentialBroker(config.credentials_path, config.grants, audit)
-    api_key = ""
-    if config.model.credential:
+
+    def api_key(credential: str) -> str:
+        if not credential:
+            return ""
         granted = broker.env_for("model")
-        if config.model.credential not in granted:
-            raise CredentialError(
-                f"[model] credential = \"{config.model.credential}\" must be listed under "
-                "[credentials.grants] model = [...]")
-        api_key = granted[config.model.credential]
-    provider = make_provider(config.model.provider, config.model.name, api_key,
-                             config.model.base_url, config.model.max_tokens)
+        if credential not in granted:
+            raise CredentialError(f"credential \"{credential}\" must be listed under "
+                                  "[credentials.grants] model = [...]")
+        return granted[credential]
+
+    m = config.model
+    provider = make_provider(m.provider, m.name, api_key(m.credential), m.base_url, m.max_tokens)
+    reviewer = None
+    if config.smart.enabled:
+        sm = config.smart
+        reviewer = SmartReviewer(
+            make_provider(sm.provider or m.provider, sm.name or m.name, api_key(sm.credential or m.credential),
+                          sm.base_url or m.base_url, max_tokens=100),
+            sm.max_chars)
     sandbox = make_sandbox(config.sandbox_mode, config.sandbox)
-    executor = Executor(ApprovalPolicy(deny=config.deny, allow=config.allow), sandbox, broker, audit, approver)
     workspace = Workspace(sandbox.policy.workspace)
+    executor = Executor(ApprovalPolicy(deny=config.deny, allow=config.allow), sandbox, broker, audit, approver,
+                        reviewer=reviewer, stash=lambda command: stash_command(workspace, command),
+                        is_tainted=lambda: session.tainted)
     memory = MemoryStore(config.memory_dir, config.memory_limits)
     tools = ToolRegistry([
         read_file_tool(workspace, audit),
@@ -59,7 +72,7 @@ def build_agent(config: Config, audit: AuditLog, session: SessionState, sessions
         web_fetch_tool(config.web, audit, confirm, on_content=lambda: setattr(session, "tainted", True)),
         memory_tool(memory, session, audit, confirm, config.memory_write_approval, broker.redact),
         session_search_tool(sessions, session),
-    ])
+    ], redact=chain(broker.redact, redact_patterns) if config.redact_patterns else broker.redact)
     context = ContextEngine(max_chars=config.context_chars, memory_snapshot=memory.snapshot())
     return Agent(provider, tools, context, config.max_steps)
 

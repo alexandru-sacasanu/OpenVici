@@ -33,6 +33,17 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class SmartApprovalConfig:
+    """Empty provider/name/base_url/credential fall back to the [model] values."""
+    enabled: bool = False
+    provider: str = ""
+    name: str = ""
+    base_url: str = ""
+    credential: str = ""
+    max_chars: int = 2000
+
+
+@dataclass(frozen=True)
 class Config:
     home: Path
     sandbox_mode: str
@@ -46,6 +57,8 @@ class Config:
     context_chars: int = 400_000
     memory_limits: dict[str, int] = field(default_factory=dict)
     memory_write_approval: str = "tainted"
+    smart: SmartApprovalConfig = field(default_factory=SmartApprovalConfig)
+    redact_patterns: bool = True
 
     @property
     def memory_dir(self) -> Path:
@@ -73,6 +86,8 @@ _SCHEMA: dict[str, set[str]] = {
     "web": {"allow_domains", "deny_domains", "allowed_ports", "max_bytes", "timeout_s"},
     "agent": {"max_steps", "context_chars"},
     "memory": {"memory_chars", "user_chars", "write_approval"},
+    "smart_approval": {"enabled", "provider", "name", "base_url", "credential", "max_chars"},
+    "redaction": {"patterns"},
 }
 
 
@@ -110,7 +125,12 @@ def load_config(path: Path | None = None) -> Config:
         if key in web:
             _string_list(web[key], f"web.{key}")
     agent = data.get("agent", {})
+    redact = data.get("redaction", {}).get("patterns", True)
+    smart_raw = data.get("smart_approval", {})
+    if not isinstance(redact, bool) or not isinstance(smart_raw.get("enabled", False), bool):
+        raise ConfigError(f"{path}: redaction.patterns and smart_approval.enabled must be true or false")
     try:
+        smart = SmartApprovalConfig(**smart_raw)
         model = ModelConfig(**data.get("model", {}))
         web_policy = WebPolicy(**web)
     except TypeError as exc:
@@ -142,6 +162,8 @@ def load_config(path: Path | None = None) -> Config:
         context_chars=int(agent.get("context_chars", 400_000)),
         memory_limits=limits,
         memory_write_approval=write_approval,
+        smart=smart,
+        redact_patterns=redact,
     )
 
 

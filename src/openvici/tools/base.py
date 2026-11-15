@@ -42,8 +42,9 @@ _TYPES: dict[str, type | tuple[type, ...]] = {"string": str, "integer": int, "bo
 
 
 class ToolRegistry:
-    def __init__(self, tools: list[Tool] | None = None):
+    def __init__(self, tools: list[Tool] | None = None, redact: Callable[[str], str] | None = None):
         self._tools: dict[str, Tool] = {}
+        self._redact = redact or (lambda text: text)
         for tool in tools or []:
             self.register(tool)
 
@@ -56,8 +57,13 @@ class ToolRegistry:
         return [t.spec for t in self._tools.values()]
 
     def dispatch(self, call: ToolCall) -> tuple[str, bool]:
-        """(result text, is_error). Never raises for a problem the model
-        caused; audit failures do propagate, because then nothing may run."""
+        """(result text, is_error), with secrets redacted. Never raises for a
+        problem the model caused; audit failures do propagate, because then
+        nothing may run."""
+        text, is_error = self._dispatch(call)
+        return self._redact(text), is_error
+
+    def _dispatch(self, call: ToolCall) -> tuple[str, bool]:
         tool = self._tools.get(call.name)
         if tool is None:
             return f"Unknown tool '{call.name}'. Available: {', '.join(self._tools) or 'none'}.", True

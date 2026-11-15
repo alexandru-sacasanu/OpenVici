@@ -26,6 +26,7 @@ from .base import Confirm, Tool, ToolError, refuse
 MAX_READ_BYTES = 400_000
 MAX_WRITE_BYTES = 1_000_000
 _CONTAINER_ROOT = "/workspace"
+STASH_DIR = ".openvici/pending"
 # writing here can make the *host* run code later (git hooks, git config)
 _ASK_BEFORE_WRITING = {".git"}
 
@@ -113,6 +114,10 @@ def write_file_tool(workspace: Workspace, audit: AuditLog, confirm: Confirm = re
         data = content.encode("utf-8")
         if len(data) > MAX_WRITE_BYTES:
             raise ToolError(f"content is {len(data)} bytes; the limit is {MAX_WRITE_BYTES}")
+        if "[REDACTED:" in content:
+            raise ToolError("The content contains a [REDACTED:...] marker. You were never shown the real "
+                            "value, so writing this would destroy it. Change the file without rewriting "
+                            "that part, or ask the user to do it.")
         parts = workspace.parts(path)
         target = path[:300]
         if parts[0] in _ASK_BEFORE_WRITING:
@@ -142,3 +147,18 @@ def write_file_tool(workspace: Workspace, audit: AuditLog, confirm: Confirm = re
             "content": {"type": "string", "description": "The full new content of the file"}},
          "required": ["path", "content"]},
         handler)
+
+
+def stash_command(workspace: Workspace, command: str) -> str:
+    """Save a command the user could not reasonably review in a prompt as a
+    script under .openvici/pending/. Same no-symlink rules as any write."""
+    name = hashlib.sha256(command.encode()).hexdigest()[:12]
+    path = f"{STASH_DIR}/{name}.sh"
+    fd = workspace.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, create_parents=True)
+    try:
+        view = memoryview(command.encode() + b"\n")
+        while view:
+            view = view[os.write(fd, view):]
+    finally:
+        os.close(fd)
+    return path

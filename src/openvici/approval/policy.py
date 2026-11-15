@@ -32,6 +32,7 @@ class Verdict:
     decision: Decision
     rule: str
     reason: str
+    understood: bool = False  # ASK only: the command was fully analysed and merely lacks an allow rule
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,7 @@ class ApprovalPolicy:
             return Verdict(Decision.ASK, "needs-human", blocker)
         if self.allow and all(_allowed(seg.text, self.allow) for seg in analysis.segments):
             return Verdict(Decision.ALLOW, "user-allow", "every part matches your allow rules")
-        return Verdict(Decision.ASK, "needs-human", "not covered by an allow rule")
+        return Verdict(Decision.ASK, "needs-human", "not covered by an allow rule", understood=True)
 
 
 def _why_not_auto(analysis: Analysis) -> str | None:
