@@ -1,4 +1,4 @@
-"""openvici chat | check | run | audit verify | audit head"""
+"""openvici chat | sessions | memory | forget | check | run | audit"""
 
 from __future__ import annotations
 
@@ -12,10 +12,13 @@ from .config import Config, ConfigError, load_config
 from .context import ContextEngine
 from .credentials import CredentialBroker, CredentialError
 from .executor import Executor
+from .forget import forget_session
+from .memory import TARGETS, MemoryStore
+from .sessions import SessionError, SessionStore, new_session_id
 from .providers import ProviderError, make_provider
 from .sandbox import SandboxError, make_sandbox
-from .tools import (ToolRegistry, Workspace, read_file_tool, shell_tool, web_fetch_tool,
-                    write_file_tool)
+from .tools import (SessionState, ToolRegistry, Workspace, memory_tool, read_file_tool,
+                    session_search_tool, shell_tool, web_fetch_tool, write_file_tool)
 
 
 def _ask_on_tty(command: str, verdict: Verdict) -> bool:
@@ -32,7 +35,8 @@ def _confirm_on_tty(action: str, reason: str) -> bool:
     return input("Allow it? [y/N] ").strip().lower() == "y"
 
 
-def build_agent(config: Config, audit: AuditLog, approver=_ask_on_tty, confirm=_confirm_on_tty) -> Agent:
+def build_agent(config: Config, audit: AuditLog, session: SessionState, sessions: SessionStore,
+                approver=_ask_on_tty, confirm=_confirm_on_tty) -> Agent:
     broker = CredentialBroker(config.credentials_path, config.grants, audit)
     api_key = ""
     if config.model.credential:
@@ -47,18 +51,24 @@ def build_agent(config: Config, audit: AuditLog, approver=_ask_on_tty, confirm=_
     sandbox = make_sandbox(config.sandbox_mode, config.sandbox)
     executor = Executor(ApprovalPolicy(deny=config.deny, allow=config.allow), sandbox, broker, audit, approver)
     workspace = Workspace(sandbox.policy.workspace)
+    memory = MemoryStore(config.memory_dir, config.memory_limits)
     tools = ToolRegistry([
         read_file_tool(workspace, audit),
         write_file_tool(workspace, audit, confirm),
         shell_tool(executor),
-        web_fetch_tool(config.web, audit, confirm),
+        web_fetch_tool(config.web, audit, confirm, on_content=lambda: setattr(session, "tainted", True)),
+        memory_tool(memory, session, audit, confirm, config.memory_write_approval, broker.redact),
+        session_search_tool(sessions, session),
     ])
-    return Agent(provider, tools, ContextEngine(max_chars=config.context_chars), config.max_steps)
+    context = ContextEngine(max_chars=config.context_chars, memory_snapshot=memory.snapshot())
+    return Agent(provider, tools, context, config.max_steps)
 
 
 def _chat(config: Config, audit: AuditLog) -> int:
-    agent = build_agent(config, audit)
-    print("OpenVici. Ctrl-D or /exit to leave.", file=sys.stderr)
+    sessions = SessionStore(config.sessions_path)
+    session = SessionState(new_session_id())
+    agent = build_agent(config, audit, session, sessions)
+    print(f"OpenVici, session {session.id}. Ctrl-D or /exit to leave.", file=sys.stderr)
     while True:
         try:
             line = input("\nyou> ").strip()
@@ -69,12 +79,14 @@ def _chat(config: Config, audit: AuditLog) -> int:
             return 0
         if not line:
             continue
+        before = len(agent.history)
         try:
             reply = agent.run_turn(line, on_tool_call=lambda c: print(
                 f"  [{c.name}] {str(c.arguments)[:160]}", file=sys.stderr))
         except ProviderError as exc:
             print(f"model error: {exc}", file=sys.stderr)
             continue
+        sessions.record(session.id, agent.history[before:])
         print(f"\n{reply}")
 
 
@@ -82,6 +94,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="openvici")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("chat", help="talk to the agent")
+    p_sessions = sub.add_parser("sessions", help="list or search earlier sessions")
+    p_sessions.add_argument("what", choices=["list", "search"])
+    p_sessions.add_argument("query", nargs="?", default="")
+    sub.add_parser("memory", help="show long-term memory and how full it is")
+    p_forget = sub.add_parser("forget", help="delete a session's messages and the memories it wrote")
+    p_forget.add_argument("--session", required=True)
     p_check = sub.add_parser("check", help="show the approval verdict for a command without running it")
     p_check.add_argument("command")
     p_run = sub.add_parser("run", help="run a command through approval, credentials and the sandbox")
@@ -99,6 +117,39 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "chat":
             return _chat(config, audit)
+
+        if args.cmd == "sessions":
+            store = SessionStore(config.sessions_path)
+            if args.what == "list":
+                for info in store.list():
+                    print(f"{info.id}  {info.messages:>4} msgs  {info.first_line}")
+            else:
+                for hit in store.search(args.query):
+                    print(f"{hit.session_id}  {hit.role:<9}  {' '.join(hit.snippet.split())}")
+            return 0
+
+        if args.cmd == "memory":
+            memory = MemoryStore(config.memory_dir, config.memory_limits)
+            for target, filename in TARGETS.items():
+                used, limit = memory.usage(target)
+                print(f"{filename}  {used}/{limit} characters  ({memory.directory / filename})")
+                for entry in memory.entries(target):
+                    print(f"  - {entry.text}  [{', '.join(entry.sessions) or 'typed by hand'}]")
+            return 0
+
+        if args.cmd == "forget":
+            report = forget_session(args.session, SessionStore(config.sessions_path),
+                                    MemoryStore(config.memory_dir, config.memory_limits), audit)
+            if not report.known:
+                print(f"No session {report.session_id} found; nothing to delete.")
+                return 1
+            print(f"Deleted {report.messages_deleted} messages and {report.memory_entries_removed} memory entries "
+                  f"from session {report.session_id}.")
+            print("Verified: no trace left in the session database or memory files." if report.verified
+                  else "WARNING: verification failed; some data from this session is still present.")
+            print("Not touched: the audit log (action records only), files written in the workspace, "
+                  "and anything your model provider keeps.")
+            return 0 if report.verified else 1
 
         if args.cmd == "check":
             verdict = policy.evaluate(args.command)
@@ -128,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(outcome.result.stdout)
         sys.stderr.write(outcome.result.stderr)
         return outcome.result.exit_code
-    except (ConfigError, SandboxError, CredentialError, AuditError, ProviderError, ValueError) as exc:
+    except (ConfigError, SandboxError, CredentialError, AuditError, ProviderError, SessionError, ValueError) as exc:
         print(f"openvici: {exc}", file=sys.stderr)
         return 3
 

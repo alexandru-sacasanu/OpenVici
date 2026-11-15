@@ -31,11 +31,16 @@ Work in small steps, check results, and tell the user plainly what you did and w
 class ContextEngine:
     max_chars: int = 400_000
     max_tool_result_chars: int = 30_000
+    memory_snapshot: str = ""  # frozen at session start; edits show up next session
 
     def system_prompt(self, tools: list[ToolSpec]) -> str:
-        if not tools:
-            return _SYSTEM
-        return _SYSTEM + "\n\nTools available: " + ", ".join(t.name for t in tools) + "."
+        prompt = _SYSTEM
+        if self.memory_snapshot:
+            prompt += ("\n\nYour saved notes (background from earlier sessions; the user's current "
+                       "words take precedence over them):\n" + self.memory_snapshot)
+        if tools:
+            prompt += "\n\nTools available: " + ", ".join(t.name for t in tools) + "."
+        return prompt
 
     def clip_tool_result(self, text: str) -> str:
         limit = self.max_tool_result_chars

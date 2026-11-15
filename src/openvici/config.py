@@ -44,6 +44,16 @@ class Config:
     web: WebPolicy = field(default_factory=WebPolicy)
     max_steps: int = 25
     context_chars: int = 400_000
+    memory_limits: dict[str, int] = field(default_factory=dict)
+    memory_write_approval: str = "tainted"
+
+    @property
+    def memory_dir(self) -> Path:
+        return self.home / "memory"
+
+    @property
+    def sessions_path(self) -> Path:
+        return self.home / "sessions.db"
 
     @property
     def audit_path(self) -> Path:
@@ -62,6 +72,7 @@ _SCHEMA: dict[str, set[str]] = {
     "model": {"provider", "name", "base_url", "credential", "max_tokens"},
     "web": {"allow_domains", "deny_domains", "allowed_ports", "max_bytes", "timeout_s"},
     "agent": {"max_steps", "context_chars"},
+    "memory": {"memory_chars", "user_chars", "write_approval"},
 }
 
 
@@ -105,6 +116,17 @@ def load_config(path: Path | None = None) -> Config:
     except TypeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
+    mem = data.get("memory", {})
+    write_approval = mem.get("write_approval", "tainted")
+    if write_approval not in ("tainted", "always", "never"):
+        raise ConfigError(f"{path}: memory.write_approval must be 'tainted', 'always' or 'never'")
+    limits = {}
+    for key, target in (("memory_chars", "memory"), ("user_chars", "user")):
+        if key in mem:
+            if not isinstance(mem[key], int) or isinstance(mem[key], bool) or mem[key] < 0:
+                raise ConfigError(f"{path}: memory.{key} must be a non-negative integer")
+            limits[target] = mem[key]
+
     approvals = data.get("approvals", {})
     grants = data.get("credentials", {}).get("grants", {})
     return Config(
@@ -118,6 +140,8 @@ def load_config(path: Path | None = None) -> Config:
         web=web_policy,
         max_steps=int(agent.get("max_steps", 25)),
         context_chars=int(agent.get("context_chars", 400_000)),
+        memory_limits=limits,
+        memory_write_approval=write_approval,
     )
 
 
